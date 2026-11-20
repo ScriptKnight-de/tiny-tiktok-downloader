@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tiny-tiktok-downloader"
+version = "0.1.0"
+description = "Daily sync of the images and videos from your liked and saved TikTok videos"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ScriptKnight" }]
+keywords = ["tiktok", "likes", "bookmarks", "gallery-dl", "downloader", "backup"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia",
+]
+
+dependencies = ["gallery-dl>=1.32"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/ScriptKnight-de/tiny-tiktok-downloader"
+Issues = "https://github.com/ScriptKnight-de/tiny-tiktok-downloader/issues"
+Donate = "https://ko-fi.com/scriptknight"
+
+[project.scripts]
+tiny-tiktok-downloader = "tiny_tiktok_downloader.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tiny_tiktok_downloader"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

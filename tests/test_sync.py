@@ -1,0 +1,56 @@
+import json
+
+import pytest
+
+from tiny_tiktok_downloader import sync as s
+from tiny_tiktok_downloader.config import Settings, load_env_files
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return Settings(tmp_path / "c.txt", tmp_path / "out", tmp_path / "state" / "a.sqlite3", "me")
+
+
+def test_source_urls(settings):
+    assert s.source_url("likes", settings) == "https://www.tiktok.com/@me/liked"
+    assert s.source_url("bookmarks", settings) == "https://www.tiktok.com/@me/saved"
+
+
+def test_config_archive_outside_output_and_modes(settings):
+    full = s.build_config("likes", settings, incremental=False)["extractor"]
+    inc = s.build_config("likes", settings, incremental=True)["extractor"]
+    assert full["archive"] == str(settings.archive)
+    assert full["tiktok"]["skip"] is True
+    assert inc["tiktok"]["skip"] == f"abort:{s.ABORT_AFTER}"
+    assert full["tiktok"]["directory"] == ["likes"]
+
+
+def test_backfill_state_switches_to_incremental(settings, monkeypatch):
+    settings.archive.parent.mkdir(parents=True)
+    monkeypatch.setattr(s, "GALLERY_DL", [__import__("sys").executable, "-c", "pass"])
+    s.run_source("likes", settings)
+    assert json.loads(settings.state_file.read_text())["likes"]["backfilled"] is True
+    seen = {}
+    real = s.build_config
+    monkeypatch.setattr(s, "build_config",
+                        lambda src, st, inc: seen.setdefault("inc", inc) and real(src, st, inc) or real(src, st, inc))
+    s.run_source("likes", settings)
+    assert seen["inc"] is True
+
+
+def test_failed_run_does_not_mark_backfilled(settings, monkeypatch):
+    settings.archive.parent.mkdir(parents=True)
+    monkeypatch.setattr(s, "GALLERY_DL", [__import__("sys").executable, "-c", "raise SystemExit(4)"])
+    s.run_source("likes", settings)
+    assert not settings.state_file.exists()
+
+
+def test_env_file_does_not_override(tmp_path, monkeypatch):
+    f = tmp_path / "env"
+    f.write_text("# c\nX_USERNAME='fromfile'\nX_FOO=bar\n")
+    monkeypatch.setenv("TIKTOK_USERNAME", "fromenv")
+    monkeypatch.delenv("X_FOO", raising=False)
+    load_env_files([f])
+    import os
+    assert os.environ["TIKTOK_USERNAME"] == "fromenv" and os.environ["X_FOO"] == "bar"
+    monkeypatch.delenv("X_FOO")

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=tiny-tiktok-downloader
+Comment=Download media from your liked and saved TikTok videos
+Exec=tiny-tiktok-downloader
+Icon=tiny-tiktok-downloader
+Categories=Network;Utility;
+Terminal=false
+Actions=Donate;
+
+[Desktop Action Donate]
+Name=Support on Ko-fi
+Exec=xdg-open https://ko-fi.com/scriptknight

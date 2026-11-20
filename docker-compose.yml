@@ -1,0 +1,21 @@
+services:
+  tiny-tiktok-downloader:
+    build: .
+    # Pre-built image from GitHub Container Registry; `docker compose up --build` builds locally instead
+    image: ${TINY_TIKTOK_DOWNLOADER_IMAGE:-ghcr.io/scriptknight-de/tiny-tiktok-downloader:latest}
+    container_name: tiny-tiktok-downloader
+    restart: unless-stopped
+    # Run as your host user so downloaded files are owned by you
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      TIKTOK_USERNAME: ${TIKTOK_USERNAME:?set TIKTOK_USERNAME in .env}
+      TZ: ${TZ:-Europe/Berlin}
+      TIKTOK_SYNC_TIME: ${TIKTOK_SYNC_TIME:-04:00}
+      TIKTOK_RUN_ON_START: ${TIKTOK_RUN_ON_START:-false}
+    volumes:
+      # folder containing cookies.txt exported from your logged-in browser (read-only)
+      - ${TIKTOK_CONFIG_DIR:-./config}:/config:ro
+      # archive DB = memory of already downloaded posts; keep it persistent!
+      - ${TIKTOK_DATA_DIR:-./data}:/data
+      # downloaded media; you may move files out of here freely
+      - ${TIKTOK_DOWNLOADS_DIR:-./downloads}:/downloads

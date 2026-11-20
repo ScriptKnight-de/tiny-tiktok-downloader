@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.env
+downloads/
+cookies.txt
+
+data/
+config/
+
+build/
+dist/
+
+# graphify output (generated)
+graphify-out/

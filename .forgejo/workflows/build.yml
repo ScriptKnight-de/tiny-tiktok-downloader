@@ -1,0 +1,225 @@
+# Weekly (and on demand with rebuild=true) it rebuilds the newest release tag from scratch so
+# the base image and Alpine packages are current; this re-publishes its version tags and :latest
+# and then scans the result with Trivy (fails on CRITICAL vulnerabilities that have a fix).
+# Tests, then builds the Alpine-based image and publishes it to the Forgejo registry and
+# to GitHub Container Registry. On v* tags it also builds the AppImage and attaches it to a
+# release on both Forgejo and GitHub.
+#
+# Required repository secrets (Settings > Actions > Secrets):
+#   REGISTRY_USER   Forgejo username that owns the package (scriptknight)
+#   REGISTRY_TOKEN  Forgejo access token with write:package and write:repository (releases)
+#   GH_USER         GitHub username that owns the repo (ScriptKnight-de)
+#   GH_TOKEN        GitHub classic personal access token with scopes: write:packages, repo
+#                   (GHCR does not accept fine-grained tokens)
+#
+# Runner: label "docker". The runner talks to a dind daemon; job containers reach it
+# through the "dind" alias (runner config: container.options "--add-host=dind:host-gateway").
+name: build-image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  schedule:
+    # Weekly rebuild (Mondays 03:00 UTC): newest base image + OS packages, no layer cache.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: "Run the weekly rebuild now (latest release, fresh base image, no cache)"
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: forgejo.scriptknight.de
+  IMAGE: forgejo.scriptknight.de/scriptknight/tiny-tiktok-downloader
+  GHCR_IMAGE: ghcr.io/scriptknight-de/tiny-tiktok-downloader
+  GH_REPO: ScriptKnight-de/tiny-tiktok-downloader
+
+jobs:
+  test:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python tooling
+        run: |
+          if ! python3 -m venv --help >/dev/null 2>&1 || ! python3 -m ensurepip --version >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq python3-venv python3-pip
+          fi
+      - name: Run tests
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install -q -e ".[dev]"
+          pytest -q
+
+  image:
+    needs: test
+    runs-on: docker
+    env:
+      DOCKER_HOST: tcp://dind:2375
+      # true for the weekly schedule and for a manual run with rebuild=true
+      REBUILD: ${{ github.event_name == 'schedule' || github.event.inputs.rebuild == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the release to rebuild
+        id: rel
+        if: env.REBUILD == 'true'
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          [ -n "$tag" ] || { echo "no release tag found"; exit 1; }
+          git checkout -q "$tag"
+          v=${tag#v}
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "minor=${v%.*}" >> "$GITHUB_OUTPUT"
+          echo "rebuilding $tag"
+
+      - name: Ensure docker CLI
+        run: |
+          if ! command -v docker >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq docker.io
+          fi
+          for i in 1 2 3 4 5; do docker version && break; sleep 3; done
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Forgejo registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GH_USER }}
+          password: ${{ secrets.GH_TOKEN }}
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          # Link the GHCR package to the public GitHub repo (it would otherwise get the Forgejo URL)
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.GH_REPO }}
+            org.opencontainers.image.url=https://github.com/${{ env.GH_REPO }}
+            org.opencontainers.image.licenses=MIT
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,enable=${{ env.REBUILD != 'true' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.rel.outputs.version }},enable=${{ env.REBUILD == 'true' }}
+            type=raw,value=${{ steps.rel.outputs.minor }},enable=${{ env.REBUILD == 'true' }}
+
+      - name: Build and push (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          no-cache: ${{ env.REBUILD == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      - name: Verify the image exists in both registries
+        run: |
+          echo "tags pushed:"; echo "${{ steps.meta.outputs.tags }}"
+          if [ "$REBUILD" = true ]; then t="${{ steps.rel.outputs.version }}"; else t="sha-$(echo "$GITHUB_SHA" | cut -c1-7)"; fi
+          docker buildx imagetools inspect "${{ env.IMAGE }}:$t" >/dev/null
+          docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:$t" >/dev/null
+          echo "both registries OK"
+
+      # Weekly rebuild only: scan the freshly published image for vulnerabilities.
+      # Report HIGH+CRITICAL in the log, fail the run on CRITICAL issues that already have a fix.
+      - name: Trivy scan (weekly rebuild)
+        if: env.REBUILD == 'true'
+        run: |
+          img="${{ env.GHCR_IMAGE }}:${{ steps.rel.outputs.version }}"
+          docker pull -q aquasec/trivy:latest >/dev/null
+          trivy() { docker run --rm -v trivy-cache:/root/.cache/ aquasec/trivy:latest "$@"; }
+          status=0
+          for platform in linux/amd64 linux/arm64; do
+            echo "=== $img ($platform): HIGH and CRITICAL (report) ==="
+            trivy image --quiet --platform "$platform" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 "$img"
+            echo "=== $img ($platform): CRITICAL with a fix available (gate) ==="
+            trivy image --quiet --platform "$platform" --severity CRITICAL --ignore-unfixed --exit-code 10 "$img" || status=$?
+          done
+          if [ "$status" -ne 0 ]; then echo "trivy gate failed (exit $status)"; exit 1; fi
+          echo "no fixable CRITICAL vulnerabilities"
+
+  appimage:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build AppImage
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+          ./packaging/build-appimage.sh
+          cd dist && for f in *.AppImage; do sha256sum "$f" > "$f.sha256"; done
+          ls -la
+
+      - name: Write release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import glob, json, os
+          tag = os.environ["TAG"]
+          sums = "\n".join(open(f).read().strip() for f in sorted(glob.glob("dist/*.sha256")))
+          text = (f"tiny-tiktok-downloader {tag}\n\nDocker image: `ghcr.io/scriptknight-de/tiny-tiktok-downloader:{tag.lstrip('v')}`\n\n"
+                  f"SHA-256:\n```\n{sums}\n```\n")
+          json.dump({"tag_name": tag, "target_commitish": os.environ.get("SHA", ""), "name": f"tiny-tiktok-downloader {tag.lstrip('v')}", "body": text},
+                    open("release.json", "w"))
+          PY
+
+      - name: Publish Forgejo release
+        env:
+          T: ${{ secrets.REGISTRY_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          api=https://forgejo.scriptknight.de/api/v1/repos/scriptknight/tiny-tiktok-downloader
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $T" "$api/releases/tags/$TAG")" = 200 ]; then
+            echo "Forgejo release $TAG already exists, skipping"; exit 0
+          fi
+          python3 -c 'import json;d=json.load(open("release.json"));d.pop("target_commitish",None);print(json.dumps(d))' > f.json
+          id=$(curl -fsS -X POST -H "Authorization: token $T" -H "Content-Type: application/json" -d @f.json "$api/releases" \
+                 | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          for f in dist/*.AppImage dist/*.sha256; do
+            curl -fsS -X POST -H "Authorization: token $T" -F "attachment=@$f" "$api/releases/$id/assets?name=$(basename "$f")" >/dev/null
+          done
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          api=https://api.github.com/repos/$GH_REPO
+          auth="Authorization: Bearer $GH_TOKEN"
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "$auth" "$api/releases/tags/$TAG")" = 200 ]; then
+            echo "GitHub release $TAG already exists, skipping"; exit 0
+          fi
+          python3 -c 'import json,os;d=json.load(open("release.json"));d["target_commitish"]=os.environ["SHA"];print(json.dumps(d))' > g.json
+          id=$(curl -fsS -X POST -H "$auth" -H "Accept: application/vnd.github+json" -d @g.json "$api/releases" \
+                 | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          for f in dist/*.AppImage dist/*.sha256; do
+            curl -fsS -X POST -H "$auth" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" "https://uploads.github.com/repos/$GH_REPO/releases/$id/assets?name=$(basename "$f")" >/dev/null
+          done
