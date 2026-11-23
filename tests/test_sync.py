@@ -54,3 +54,12 @@ def test_env_file_does_not_override(tmp_path, monkeypatch):
     import os
     assert os.environ["TIKTOK_USERNAME"] == "fromenv" and os.environ["X_FOO"] == "bar"
     monkeypatch.delenv("X_FOO")
+
+
+def test_auth_error_detection():
+    from tiny_tiktok_downloader.notify import looks_like_auth_error as f
+
+    assert f("[tiktok][error] AuthRequired: login needed")
+    assert f("[tiktok][error] HttpError: '403 Forbidden'")
+    assert not f("downloads/likes/name_403_1.mp4")
+    assert not f("[tiktok][info] Requesting https://www.tiktok.com/@a/liked")

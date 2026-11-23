@@ -12,6 +12,12 @@ services:
       TZ: ${TZ:-Europe/Berlin}
       TIKTOK_SYNC_TIME: ${TIKTOK_SYNC_TIME:-04:00}
       TIKTOK_RUN_ON_START: ${TIKTOK_RUN_ON_START:-false}
+      TIKTOK_GOTIFY_URL: ${TIKTOK_GOTIFY_URL:-}
+      TIKTOK_GOTIFY_TOKEN: ${TIKTOK_GOTIFY_TOKEN:-}
+      TIKTOK_NTFY_URL: ${TIKTOK_NTFY_URL:-}
+      TIKTOK_NTFY_TOKEN: ${TIKTOK_NTFY_TOKEN:-}
+      TIKTOK_WEBHOOK_URL: ${TIKTOK_WEBHOOK_URL:-}
+      TIKTOK_COOKIE_WARN_DAYS: ${TIKTOK_COOKIE_WARN_DAYS:-7}
     volumes:
       # folder containing cookies.txt exported from your logged-in browser (read-only)
       - ${TIKTOK_CONFIG_DIR:-./config}:/config:ro

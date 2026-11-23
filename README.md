@@ -115,6 +115,22 @@ Set these as environment variables, in `./.env`, or in `~/.config/tiny-tiktok-do
 | `TINY_TIKTOK_DOWNLOADER_ARCHIVE` | `~/.local/share/tiny-tiktok-downloader/archive.sqlite3` | the "already downloaded" database |
 | `TIKTOK_SYNC_TIME` | `04:00` | daily sync time for the Docker daemon (`HH:MM`) |
 | `TIKTOK_RUN_ON_START` | `false` | also sync when the daemon starts |
+| `TIKTOK_GOTIFY_URL`, `TIKTOK_GOTIFY_TOKEN` | none | send alerts to [Gotify](https://gotify.net) |
+| `TIKTOK_NTFY_URL`, `TIKTOK_NTFY_TOKEN` | none | send alerts to [ntfy](https://ntfy.sh) (token optional) |
+| `TIKTOK_WEBHOOK_URL` | none | POST alerts as JSON (`app`, `version`, `title`, `message`, `priority`) |
+| `TIKTOK_COOKIE_WARN_DAYS` | `7` | warn this many days before the login cookie expires |
+
+### Alerts
+
+Set any of the notification variables above to get a message when a sync fails, when the
+login cookie is rejected or about to expire (so you can export a fresh `cookies.txt`),
+and when a failing setup recovers. Without them nothing is sent. Check your setup with
+`tiny-tiktok-downloader notify-test` (in Docker: `docker compose run --rm tiny-tiktok-downloader notify-test`).
+Dry runs never send alerts.
+
+The desktop app has a single **Alert webhook** field (with a **Test** button) in its settings;
+it takes any URL that accepts a JSON POST, and is saved as `TIKTOK_WEBHOOK_URL`. For Gotify use
+`https://your-gotify/message?token=APP_TOKEN`.
 
 ## How "already downloaded" works
 
